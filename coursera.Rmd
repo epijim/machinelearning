@@ -1,0 +1,152 @@
+---
+title: Machine learning assignment
+author: "James Black"
+output:
+  html_document:
+    toc: true
+    number_sections: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+---
+
+# Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+# Setup
+
+## Packages
+
+```{r}
+library(caret)
+library(plyr)
+library(dplyr)
+library(tictoc)
+
+tic()
+```
+
+## Get the data
+
+```{r, cache = T}
+  data_train <- read.csv(
+    url("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"),
+     na.strings=c("","#DIV/0!","NA") # blank is NA
+  )
+  data_test <- read.csv(
+    url("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"),
+     na.strings=c("","#DIV/0!","NA") # blank is NA
+  )
+```
+
+# Describe the data
+
+```{r, cache = T}
+# Size
+dim(data_train)
+dim(data_test)
+
+# Missing data?
+sapply(data_train, function(x) sum(is.na(x)))
+sapply(data_test, function(x) sum(is.na(x)))
+```
+
+There are a lot of missing variables. I'll delete the columns with 50% or more missing.
+
+```{r, cache = T}
+data_train <- data_train[, colSums(is.na(data_train)) < nrow(data_train) * 0.5]
+```
+
+# Partition the data
+
+I'll take a 70% split on the training the validation data.
+
+```{r, cache = T}
+set.seed(123)
+inTrain <- createDataPartition(data_train$classe, p=0.70, list=F)
+data_train_fit <- data_train[inTrain, ]
+data_train_validate <- data_train[-inTrain, ]
+```
+
+# Model fitting
+
+## Feature selection
+
+I will use the moderately computationally hungry Recursive Feature Elimination to pick covariates as doing this analysis outside of owrk hours means speed is very important (rather than manually thinking about the data).
+
+```{r, cache = T}
+set.seed(123)
+
+# define the control for the RFE using a random forest selection function
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+
+# run the RFE algorithm
+model_rfe <- rfe(
+  data_train_fit[,8:59], data_train_fit[,60],
+  sizes=c(1:50), # lets keep the top 45
+  rfeControl=control)
+
+# summarize the results
+print(model_rfe)
+# list the chosen features
+predictors(model_rfe)
+# plot the results
+plot(model_rfe, type=c("g", "o"))
+
+toc()
+```
+
+So my model is pretty good after just 20 variables - so I'll subset it down to the first 20 when building the model.
+
+## Random forest model
+
+I will use **Random Forest** as the outcome is categorical, I want to avoid making assumptions about the data, and the need for imputing the remaining missing values is lessened.
+
+```{r, cache = T}
+train_control <- trainControl(method="repeatedcv",
+                              number=10, # folds
+                              repeats=5) # repeats
+
+# subset to covariates
+  covariates <- c(predictors(model_rfe)[1:20],"classe")
+  covariate_colnumbers <- match(covariates,names(data_train_fit))
+
+  data_train_fit <- data_train_fit %>%
+    select(covariate_colnumbers)
+
+model <- train(classe ~ .,
+               data=data_train_fit,
+               method="rf",
+               trControl=train_control,
+               ntree=100)
+model
+
+
+```
+
+How did it do?
+
+```{r}
+model_predict <- predict(
+  model,
+  data_train_validate)
+
+confusionMatrix(
+  data_train_validate$classe,
+  model_predict)
+
+postResample(model_predict, data_train_validate$classe)
+```
+
+So, the model works!
+
+## Predicting for Test Data Set
+
+Now, we apply the model to the original testing data set downloaded from the data source. We remove the `problem_id` column first.
+
+```{r, cache = T}
+predict(model, data_test)
+```
